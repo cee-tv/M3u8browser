@@ -1,4 +1,4 @@
-/* Copyright 2023 - Herber eDevelopment - Jaroslav Herber */
+/* Copyright 2024 - Herber eDevelopment - Jaroslav Herber */
 /*
  * TODO:
  * - check if favourite name changed. UPDATE: favs are deleted if m3u is reimported. Good?
@@ -20,10 +20,11 @@ function getEl( sId ) {
 
 var bDebuggerEnabled = true, oDebugger = getEl('debugger'), iRetryChannelLoad = 0;
 
-var iCurrentChannel = false, sCurrentChannelName = false, sCurrentChannelGroup = false, sCurrentChannelLogo = false, iPreviousChannel = false, bChannelWasAlreadyPlaying = false,
+var aCurrentChannel = false, iCurrentChannel = false, sCurrentChannelName = false, sCurrentChannelGroup = false, sCurrentChannelLogo = false,
+iPreviousChannel = false, bChannelWasAlreadyPlaying = false,
 bPlayerLoaded = false, bSettingsLoaded = false, bPlaylistFileLoaded = false, bDownloadRunning = false, sUserAgent = 'Mozilla/5.0 (m3u-ip.tv ' + sAppVersion + ') ' + sDeviceFamily,
 iDownloadId = false, iChannelInputNumber = '', sSelectedGroup = false, bJustStarted = true, bStorageInitReady = false,
-iSelectedAudioChannel = false, iSelectedSubtitleTrack = false,
+iSelectedAudioTrack = false, iSelectedSubtitleTrack = false, iSelectedVideoTrack = false,
 bChannelSettingsOpened = false, sChannelSetting = false, iChannelSettingsFocusedField = 0, sFilter = false, bIsBooting = true,
 
 // EPG
@@ -39,14 +40,17 @@ bChannelNameOpened = false, bChannelInputOpened = false, bConfirmBoxOpened = fal
 bAdvancedSettingsOpened = false, bSettingsOpened = false, bNavOpened = false, bGroupsOpened = false, bStatusOpened = false, bModalOpened = false,
 bSubtitlesActive = false, bDebuggerActive = false, bChannelErrorOpened = false, bSearchFocused = false, bSaveExitAllowed = false,
 sLocalCacheFile = 'downloads/herber-playlist.m3u', bNeedNavRefresh = false, bUsbManagerOpened = false,
-oHlsApi = false, iNavChannelHeight = 54, aLazyLoadedChannels = [], aChannelOrder = [],
-bChannelEditModeActive = false, sChannelEditMode = false, bHistoryBrowserOpened = false,
+iNavChannelHeight = 54, aLazyLoadedChannels = [], aChannelOrder = [], bChannelEditModeActive = false, sChannelEditMode = false, bHistoryBrowserOpened = false,
+
+oHlsApi = false, bHlsFrameworkLoaded = false, oHlsOptions = {}, oAvPlayer = getEl('player'),
+oDashApi = false, bDashFrameworkLoaded = false, sCurrentVideoEngine = 'hls',
 
 // Some DOM-Elements
-oSearchField = getEl('search_field'), oAvPlayer = getEl('player'),
+oSearchField = getEl('search_field'),
 oInputM3u = getEl('sM3uUrl'), oInputEpgUrl = getEl('epg_url'), oInputEpgTimeShift = getEl('epg_time_shift'), oInputCustomUserAgent = getEl('user_agent_setting'),
-oEpgChannelList = getEl('epg_nav_list'), oEpgOverview = getEl('epg_overview_table'),
-oLoader = getEl('loader'), oCheckboxEpgSetting = getEl('enable_epg_setting'), oBufferSetting = getEl('buffer_setting'),
+oEpgChannelList = getEl('epg_nav_list'), oEpgOverview = getEl('epg_overview_table'), oEpgSourceFromPlaylist = getEl('epg_url_from_playlist'),
+oLoader = getEl('loader'), oCheckboxEpgSetting = getEl('enable_epg_setting'), oCheckboxEpgFromPlaylistSetting = getEl('epg_prefere_playlist'),
+oBufferSetting = getEl('buffer_setting'), oVideoFormatSetting = getEl('video_format_setting'),
 oNav = getEl('nav'), oGroupsNav = getEl('group_list'), oChannelList = getEl('channel_list'),
 oChannelSettingsList = getEl('channel_settings_list'), oChannelSubDubSettings = getEl('channel_settings_subs'),
 
@@ -66,6 +70,8 @@ oPrevChannel = getEl('channel_prev'),
 oNextChannel = getEl('channel_next'),
 oChannelNumberInput = getEl('channel_input');
 
+// DRM session
+var sDrmSessionId = "m3u" + Date.now();
 
 switch( sDeviceFamily ) {
 	case 'Browser':
@@ -95,9 +101,18 @@ function debug( mVar ) {
 		}
 		console.log(mVar);
 		//console.trace(mVar);
+		//console.log(new Error().stack);
 		if( typeof(debugCallback) === 'function' ) {
 			debugCallback(sDate + ': ' + mVar);
 		}
+	}
+}
+
+function debugError( e ) {
+	if( bDebuggerEnabled ) {
+		console.log(e.message);
+		console.trace(e);
+		console.log(e.trace);
 	}
 }
 
@@ -148,7 +163,7 @@ function fireRequest( sUrl, oFormdata, sOnSuccess, sOnFailure, sOnProgress ) {
 		oHttp.addEventListener('progress', sOnProgress);
 	}
 
-	oHttp.addEventListener('error', function() {
+	oHttp.addEventListener('error', function(oEv) {
 		if( !bFailureFired ) { bFailureFired = true; sOnFailure(oHttp); }
 	});
 	oHttp.addEventListener('abort', function() {
@@ -165,14 +180,16 @@ function fireRequest( sUrl, oFormdata, sOnSuccess, sOnFailure, sOnProgress ) {
 				oHttp.send(oFormdata);
 			} else {
 				oHttp.open("GET", sUrl, true);
-				oHttp.setRequestHeader('Cache-Control', 'no-cache');
-				oHttp.setRequestHeader('Pragma', 'no-cache');
-				oHttp.setRequestHeader('Expires', 'Sat, 01 Jan 2000 00:00:00 GMT');
+				if( sDeviceFamily !== 'Android' ) {
+					//oHttp.setRequestHeader('Cache-Control', 'no-cache');
+					//oHttp.setRequestHeader('Pragma', 'no-cache');
+					//oHttp.setRequestHeader('Expires', 'Sat, 01 Jan 2000 00:00:00 GMT');
+				}
 				oHttp.send();
 			}
 		} catch( e ) {
 			if( !bFailureFired ) { bFailureFired = true; sOnFailure(e); }
-			debug(e.message);
+			debugError(e);
 			return false;
 		}
 		return true;
@@ -180,6 +197,13 @@ function fireRequest( sUrl, oFormdata, sOnSuccess, sOnFailure, sOnProgress ) {
 
 	return false;
 
+}
+
+
+function insertDemoPlaylistUrl() {
+	oInputM3u.scrollIntoView();
+	oInputM3u.value = 'https://m3u-ip.tv/demo-pl.php?lang=' + getLangId();
+	downloadButton();
 }
 
 
@@ -208,22 +232,12 @@ function getPlaylistFromStorage( sStorageName ) {
 
 		/*
 		localforage.getItem('sChannelListStorage').then(function(sStorageValue) {
-			console.log("playlist loaded from forage");
+			debug("playlist loaded from forage");
 			sContent = sStorageValue;
 		}).catch(function(err) {
-			console.log(err);
+			debugError(err);
 		});
 		*/
-
-		try {
-			//sContent = await localforage.getItem('sChannelListStorage');
-			// This code runs once the value has been loaded
-			// from the offline store.
-			//console.log(sContent);
-		} catch (err) {
-			// This code runs if there were any errors.
-			console.log(err);
-		}
 
 	}
 
@@ -396,11 +410,23 @@ function checkNetwork() {
 				}
 			});
 		} catch( e ) {
-			debug(e.message);
+			debugError(e);
 		}
 	}
 
 	// LG: TODO: https://itnext.io/how-to-check-network-connection-on-smarttv-webos-and-tizen-75256c67584b
+
+}
+
+
+function loadAndPlayFromCache() {
+
+	if( !loadChannelListFromCache() ) {
+		showSettings(true);
+		return false;
+	}
+
+	playlistReadyHandler();
 
 }
 
@@ -434,14 +460,6 @@ function boot() {
 	// Only load valid playlist
 	oInputM3u.value = sM3uList;
 
-	oInputM3u.onfocus = function(e) {
-		document.body.classList.add('keyboard-opened');
-	}
-
-	oInputM3u.onblur = function(e) {
-		document.body.classList.remove('keyboard-opened');
-	}
-
 	loadSettings();
 
 	oSetting = getEl('reload_playlist_setting');
@@ -450,18 +468,34 @@ function boot() {
 		// Reload playlist
 		if( sM3uList && sM3uList.indexOf('USB://') !== 0 && sM3uList.indexOf('local://') !== 0 ) {
 			debug('reload playlist: ' + sM3uList);
-			downloadPlaylistAjax(sM3uList, playlistReadyHandler);
+			downloadPlaylistAjax(sM3uList, playlistReadyHandler, function() {
+				loadAndPlayFromCache();
+			});
 			return false;
 		}
 	}
 
 	// m3u file was already downloaded, use it
-	if( !loadChannelListFromCache() ) {
-		showSettings(true);
-		return false;
-	}
+	loadAndPlayFromCache();
 
-	playlistReadyHandler();
+}
+
+
+function setPreferredTrackLanguage() {
+
+	switch( sDeviceFamily ) {
+		case 'LG':
+			break;
+		case 'Samsung':
+			break;
+		case 'Apple':
+			break;
+		case 'Android':
+			m3uConnector.setPreferredTrackLanguage(getLangId());
+			break;
+		default:
+
+	}
 
 }
 
@@ -474,10 +508,9 @@ function resetSettings() {
 	//localStorage.removeItem('sEpgUrl');
 	localStorage.removeItem('sEpgLastUpdated');
 	localStorage.removeItem('sEpgLastUrl');
+	//setEpgEnableSetting(false);
 
 	removeGroupFilter();
-
-	setEpgEnableSetting(false);
 
 	hideElement('epg_activator');
 
@@ -495,6 +528,10 @@ function resetSettings() {
 		bEpgNavListBuilt = false;
 	}
 
+	if( oEpgSourceFromPlaylist ) {
+		oEpgSourceFromPlaylist.innerHTML = getLang('noEpgUrlInPlaylist');
+	}
+
 	sFilter = false;
 	//aFavourites = false;
 	bTrackInfoLoaded = false;
@@ -507,25 +544,7 @@ function resetSettings() {
 	resetEpgStatus();
 
 	if( iCurrentChannel ) {
-		try {
-			switch( sDeviceFamily ) {
-				case 'Android':
-				case 'Apple':
-					m3uConnector.resetPlayer();
-					break;
-				case 'Samsung':
-					webapis.avplay.stop();
-					break;
-				case 'LG':
-				case 'Browser':
-					oHlsApi.stopLoad();
-					oHlsApi.detachMedia();
-					break;
-			}
-		} catch( e ) {
-			debug(e.message);
-		}
-
+		resetPlayer();
 	}
 
 	iCurrentChannel = false;
@@ -637,7 +656,7 @@ function downloadPlaylistProxy( sUrl ) {
 
 
 // Web version
-function downloadPlaylistAjax( sUrl, sCallback ) {
+function downloadPlaylistAjax( sUrl, sCallback, sCallbackError ) {
 
 	// Load demolist from demo-channels.js
 	if( sUrl === "https://m3u-ip.tv/demo-pl.php" && typeof(sDemoPlaylist) !== 'undefined' ) {
@@ -671,6 +690,11 @@ function downloadPlaylistAjax( sUrl, sCallback ) {
 	}, function(oHttp) {
 		hideStatus();
 		bDownloadRunning = false;
+		if( typeof(sCallbackError) === 'function' ) {
+			sCallbackError();
+			return;
+		}
+
 		if( sDeviceFamily === 'Browser' ) {
 			downloadPlaylistProxy(sUrl); // Try proxy fallback (CORS elimination)
 		} else {
@@ -701,7 +725,7 @@ function savePlaylist( sContent ) {
 
 		return savePlaylistToStorage('default', sContent);
 	} catch( e ) {
-		debug(e.message);
+		debugError(e);
 	}
 
 	return false;
@@ -723,7 +747,7 @@ function deletePlaylist() {
 	try {
 		removePlaylistFromStorage('default');
 	} catch( e ) {
-		debug(e.message);
+		debugError(e);
 	}
 
 }
@@ -823,38 +847,30 @@ function focusHistoryItem( oEl ) {
 
 }
 
-function openHistoryButton() {
-
-	//showModal('Coming soon');
-
-	var sListHtml = '', aHistory = getPlaylistHistory(), i = 0;
-	for( var sName in aHistory ) {
-		var sActive = i == 0 ? 'selected' : ''; i++;
-		sListHtml += '<li class="' + sActive + '" onmouseover="focusHistoryItem(this)"><b>' + sName + '</b><div class="history-url" onclick="loadHistoryPlaylist(this)">' + aHistory[sName] + '</div></li>';
-	}
-
-	if( sListHtml ) {
-		getEl('history_manager_content').innerHTML = '<div class="close-button" onclick="closeHistoryBrowser()"></div><ul>' + sListHtml + '</ul>';
-		showElement('history_manager');
-		bHistoryBrowserOpened = true;
-	} else {
-		showModal(getLang('errorNoPlaylistHistory'));
-	}
-
-}
-
-
-function closeHistoryBrowser() {
-	hideElement('history_manager');
-	bHistoryBrowserOpened = false;
-}
-
 
 function loadHistoryPlaylist( oEl ) {
 	closeHistoryBrowser();
 	oInputM3u.value = oEl.innerText;
 	downloadButton();
 }
+
+
+function deleteHistoryItem( sKey, oButton ) {
+
+	var aHistory = getPlaylistHistory();
+	for( var sName in aHistory ) {
+		if( sKey == sName ) {
+			delete aHistory[sName]; break;
+		}
+	}
+
+	localStorage.setItem('aPlaylistHistory', JSON.stringify(aHistory));
+
+	moveListDown();
+	oButton.parentNode.remove();
+
+}
+
 
 function savePlaylistToHistory( sPlaylistUrl ) {
 
@@ -884,6 +900,7 @@ function savePlaylistToHistory( sPlaylistUrl ) {
 
 }
 
+
 function getPlaylistHistory() {
 
 	if( !aPlaylistHistory ) {
@@ -899,7 +916,34 @@ function getPlaylistHistory() {
 }
 
 
+function openHistoryButton() {
+
+	var sListHtml = '', aHistory = getPlaylistHistory(), i = 0;
+	for( var sName in aHistory ) {
+		var sActive = i == 0 ? 'selected' : ''; i++;
+		sListHtml += '<li class="' + sActive + '" onmouseover="focusHistoryItem(this)"><b>' + sName + '</b><div class="history-url" onclick="loadHistoryPlaylist(this)">' + aHistory[sName] + '</div><svg class="delete-history-item" onclick="deleteHistoryItem(\'' + sName + '\', this)" height="30" width="30"><use href="images/icons.svg#trash" height="30" width="30"></use></svg></li>';
+	}
+
+	if( sListHtml ) {
+		getEl('history_manager_content').innerHTML = '<div class="close-button" onclick="closeHistoryBrowser()"></div><ul>' + sListHtml + '</ul>';
+		showElement('history_manager');
+		bHistoryBrowserOpened = true;
+	} else {
+		showModal(getLang('errorNoPlaylistHistory'));
+	}
+
+}
+
+
+function closeHistoryBrowser() {
+	hideElement('history_manager');
+	getEl('history_manager_content').classList.remove('delete-mode');
+	bHistoryBrowserOpened = false;
+}
+
+
 function filePickerHandler( oPicker ) {
+
 	var file = oPicker.files[0];
 	if( !file ) {
 		return false;
@@ -924,6 +968,7 @@ function filePickerHandler( oPicker ) {
 		showModal(getLang('checkM3uDownloadError'), 'Detailed error: ' + reader.error);
 		onDownloadError();
 	};
+
 }
 
 
@@ -940,11 +985,10 @@ function downloadButton() {
 			return false;
 		}
 	} catch( e ) {
-		debug(e.message);
+		debugError(e);
 	}
 
 	var sM3uUrl = oInputM3u.value;
-
 	if( !sM3uUrl ) {
 		showModal(getLang('errorNoM3uUrl'));
 		return false;
@@ -977,15 +1021,15 @@ function saveButton() {
 	}
 
 	localStorage.setItem('sM3uList', sM3uUrl);
-
+	setPreferredTrackLanguage();
 	playlistReadyHandler();
 
 	if( iCurrentChannel === false ) {
 		loadChannel(1);
 	} else {
 		if( sDeviceFamily === 'Samsung' && webapis.avplay.getState() === 'IDLE' ) {
-			webapis.avplay.stop();
-			webapis.avplay.prepareAsync(successLoadCallback, errorLoadCallback);
+			stopVideo();
+			playVideo();
 		}
 	}
 
@@ -1020,7 +1064,7 @@ function playlistReadyHandler() {
 		}
 	} catch( e ) {
 		showChannelError('Framework loading error', e.message);
-		debug(e);
+		debugError(e);
 	}
 
 }
@@ -1028,20 +1072,23 @@ function playlistReadyHandler() {
 
 function setEpgUrl( sUrl ) {
 
-	console.log("setEpgUrl " + sUrl);
+	debug("setEpgUrl " + sUrl);
 	localStorage.setItem('sEpgUrl', sUrl);
 	oInputEpgUrl.value = sUrl;
 	bIsGrabbing = false;
 
+	/*
 	if( sPlaylistEpgUrl && sPlaylistEpgUrl !== sUrl ) {
 		showElement('hint_use_playlist_epg');
 	} else {
 		hideElement('hint_use_playlist_epg');
 	}
+	*/
 
 }
 
 
+// Used in hint_use_playlist_epg in index.php
 function setPlaylistEpgUrl() {
 	if( sPlaylistEpgUrl ) {
 		setEpgUrl(sPlaylistEpgUrl);
@@ -1051,9 +1098,13 @@ function setPlaylistEpgUrl() {
 
 function getEpgUrl() {
 
+	if( getEnabledEpgFromPlaylistSetting() == '1' && sPlaylistEpgUrl ) {
+		return sPlaylistEpgUrl;
+	}
+
 	var sStoredEpgUrl = localStorage.getItem('sEpgUrl');
 	if( sStoredEpgUrl ) {
-		oInputEpgUrl.value = sStoredEpgUrl;
+		//oInputEpgUrl.value = sStoredEpgUrl;
 		return sStoredEpgUrl;
 	}
 
@@ -1068,7 +1119,9 @@ function getEpgUrl() {
 
 function loadChannelListFromCache() {
 
-	var sContent = getPlaylistFromStorage('default');
+	var sContent = getPlaylistFromStorage('default'), iCount = 0;
+
+	oEpgSourceFromPlaylist.innerHTML = getLang('noEpgUrlInPlaylist');
 
 	aChannelList = []; sPlaylistEpgUrl = false;
 	if( sContent ) {
@@ -1078,125 +1131,96 @@ function loadChannelListFromCache() {
 			//return false;
 		} else if( oInputEpgUrl ) {
 			sPlaylistEpgUrl = getMatch(sContent, /(url-tvg|x-tvg-url|epg-url|tvg-url)="([^"]+)"/, 2);
-
-			if( sPlaylistEpgUrl ) {
-				resetEpgStatus();
-
-				var sSavedEpgUrl = getEpgUrl();
-				if( !sSavedEpgUrl ) {
-					setEpgUrl(sPlaylistEpgUrl);
-					if( typeof(startEgpGrabbing) === 'function' ) {
-						startEgpGrabbing();
-					}
-				} else {
-					if( sPlaylistEpgUrl !== sSavedEpgUrl ) {
-						showElement('hint_use_playlist_epg');
-					} else {
-						hideElement('hint_use_playlist_epg');
-					}
-				}
-			}
+			oEpgSourceFromPlaylist.innerHTML = sPlaylistEpgUrl;
 		}
 
 		sContent = sContent.replace(/\r?\n/g, "\n");
+		var sSplitter = "\n", aLines = sContent.split(sSplitter), aChannel = {};
 
-		var aRawChannels = sContent.split('#EXTINF:'), iChannelsCount = aRawChannels.length, sSplitter = "\n";
-		var sDRMLicenseType = '', sDRMLicenseKey = '';
+		aLines.forEach(function(sLine) {
 
-		// DRM check in first channel
-		/*
-		if( aRawChannels[0] ) {
-			console.log(aRawChannels[0]);
-		}
-		*/
+			sLine = sLine.trim();
 
-		for( var iNum = 0; iNum < iChannelsCount; iNum++ ) {
+			if( sLine.startsWith('#EXTVLCOPT:') ) {
 
-			var aCh = aRawChannels[iNum].split(sSplitter), sExtInfo = aCh.shift(), sChannelName = '', sLogo = '',
-			sTvgId = '', sTvgName = '', sGroup = '', sChannelM3uUrl = '', aChannelName = sExtInfo.match(/",(.+)/);
-
-			if( !aChannelName ) {
-				aChannelName = sExtInfo.match(/,(.+)/);
-			}
-
-			if( aChannelName && aChannelName.length === 2 ) {
-				sChannelName = aChannelName[1];
-			}
-
-			sLogo = getMatch(sExtInfo, /tvg-logo="([^"]+)"/);
-			sTvgId = getMatch(sExtInfo, /tvg-id="([^"]+)"/);
-			sTvgName = getMatch(sExtInfo, /tvg-name="([^"]+)"/);
-			sGroup = getMatch(sExtInfo, /group-title="([^"]+)"/);
-
-			var aChannel = {
-				name: sChannelName
-			};
-
-			if( sDRMLicenseType ) {
-				aChannel.drmT = sDRMLicenseType;
-				aChannel.drmK = sDRMLicenseKey;
-				sDRMLicenseType = ''; sDRMLicenseKey = '';
-			}
-
-			var bHasDrm = false;
-
-			// Kanal-URLs und Gruppen erkennen
-			aCh.forEach(function(sLine) {
-				if( !sLine ) { return false; }
-
-				if( sLine.indexOf('#EXTGRP:') === 0 ) {
-					sGroup = sLine.replace('#EXTGRP:', '');
+				if( sLine.indexOf('#EXTVLCOPT:http-referrer=') === 0 ) {
+					aChannel.ref = sLine.replace('#EXTVLCOPT:http-referrer=', '');
+				} else if( sLine.indexOf('#EXTVLCOPT:http-user-agent=') === 0 ) {
+					aChannel.ua = sLine.replace('#EXTVLCOPT:http-user-agent=', '');
 				}
+
+			} else if( sLine.startsWith('#KODIPROP:') ) {
 
 				if( sLine.indexOf('#KODIPROP:inputstream.adaptive.license_type') === 0 ) {
-					sDRMLicenseType = sLine.replace('#KODIPROP:inputstream.adaptive.license_type=', '');
-					bHasDrm = true;
+					aChannel.drmT = sLine.replace('#KODIPROP:inputstream.adaptive.license_type=', '');
+				} else if( sLine.indexOf('#KODIPROP:inputstream.adaptive.license_key=') === 0 ) {
+					aChannel.drmK = sLine.replace('#KODIPROP:inputstream.adaptive.license_key=', '');
+				} else if( sLine.indexOf('#KODIPROP:inputstream.adaptive.stream_headers=referer=') === 0 ) {
+					aChannel.ref = sLine.replace('#KODIPROP:inputstream.adaptive.stream_headers=referer=', '');
+				} else if( sLine.indexOf('#KODIPROP:inputstream.adaptive.stream_headers=user-agent=') === 0 ) {
+					aChannel.ua = sLine.replace('#KODIPROP:inputstream.adaptive.stream_headers=user-agent=', '');
+				} else if( sLine.indexOf('#KODIPROP:inputstream.adaptive.stream_headers=') === 0 ) {
+				    aChannel.headers = sLine.replace('#KODIPROP:inputstream.adaptive.stream_headers=', '');
 				}
 
-				if( sLine.indexOf('#KODIPROP:inputstream.adaptive.license_key=') === 0 ) {
-					sDRMLicenseKey = sLine.replace('#KODIPROP:inputstream.adaptive.license_key=', '');
-					bHasDrm = true;
+			} else if( sLine.startsWith('#EXTGRP:') ) {
+
+				aChannel.group = sLine.replace('#EXTGRP:', '');
+
+			} else if( sLine.startsWith('#EXTINF:') ) {
+
+				var sChannelName = '', aChannelName = sLine.match(/",(.+)/);
+				if( !aChannelName ) {
+					aChannelName = sLine.match(/,(.+)/);
 				}
 
-				if( sLine.indexOf('#') === -1 ) {
-					sChannelM3uUrl = sLine;
+				if( aChannelName && aChannelName.length === 2 ) {
+					sChannelName = aChannelName[1];
 				}
-			});
 
-			if( !bHasDrm ) {
-				sDRMLicenseType = ''; sDRMLicenseKey = '';
-			}
+				var sLogo = getMatch(sLine, /tvg-logo="([^"]+)"/);
+				var sTvgId = getMatch(sLine, /tvg-id="([^"]+)"/);
+				var sTvgName = getMatch(sLine, /tvg-name="([^"]+)"/);
+				var sGroup = getMatch(sLine, /group-title="([^"]+)"/);
 
-			if( !sChannelM3uUrl ) {
-				continue;
-			}
+				if( !sGroup ) {
+					sGroup = '-';
+				}
 
-			if( !sGroup ) {
-				sGroup = '-';
-			}
+				aChannel.name = sChannelName;
+				aChannel.group = sGroup;
 
-			aChannel.url = sChannelM3uUrl;
-			aChannel.group = sGroup;
+				if( sLogo ) {
+					aChannel.logo = sLogo;
+				}
 
-			if( sLogo ) {
-				aChannel.logo = sLogo;
-			}
-
-			if( sTvgId ) {
-				aChannel.tvgid = sTvgId;
-			} else {
-				aChannel.tvgid = sChannelName;
-			}
-			bPlaylistEpgCompatible = true;
-
-			if( sTvgName ) {
-				aChannel.tvgn = sTvgName;
+				if( sTvgId ) {
+					aChannel.tvgid = sTvgId;
+				} else {
+					aChannel.tvgid = sChannelName;
+				}
 				bPlaylistEpgCompatible = true;
+
+				if( sTvgName ) {
+					aChannel.tvgn = sTvgName;
+					bPlaylistEpgCompatible = true;
+				}
+
+			} else if( aChannel && sLine && !sLine.startsWith('#') ) {
+
+				if( aChannel.name ) {
+					iCount++;
+					aChannel.url = sLine;
+					aChannel.id = iCount;
+					aChannelList.push(aChannel);
+				}
+
+				aChannel = {}; // reset
+
 			}
 
-			aChannelList.push(aChannel);
+		});
 
-		}
 	}
 
 	if( aChannelList && aChannelList.length > 0 ) {
@@ -1204,6 +1228,35 @@ function loadChannelListFromCache() {
 		showElement('playlist_downloaded');
 		getEl('playlist_downloaded').innerHTML = aChannelList.length + ' <span class="i18n" data-langid="channelsLoaded">' + getLang('channelsLoaded') + '</span>';
 		showSaveExitButton();
+
+		if( sPlaylistEpgUrl ) {
+			resetEpgStatus();
+			/*
+			if( sPlaylistEpgUrl !== getEpgUrl() ) {
+				setEpgUrl(sPlaylistEpgUrl);
+				bNeedEpgUpdate = true;
+				setEpgEnableSetting(true);
+				startEgpGrabbing();
+			}*/
+
+			var sSavedEpgUrl = getEpgUrl();
+			if( !sSavedEpgUrl ) {
+				setEpgUrl(sPlaylistEpgUrl);
+				if( typeof(startEgpGrabbing) === 'function' ) {
+					bNeedEpgUpdate = true;
+					setEpgEnableSetting(true);
+					startEgpGrabbing();
+				}
+			} else {
+				/*
+				if( sPlaylistEpgUrl !== sSavedEpgUrl ) {
+					showElement('hint_use_playlist_epg');
+				} else {
+					hideElement('hint_use_playlist_epg');
+				}*/
+			}
+		}
+
 		return true;
 	}
 
@@ -1263,11 +1316,16 @@ function showSettings( bFirstRun ) {
 	showElement('settings');
 	bSettingsOpened = true;
 	oSettingsFields[iSettingsFocusedField].focus();
+
+	if( bFirstRun ) {
+        getEl('settings').scrollTo(0, 0);
+    }
 }
 
 
 function hideSettings() {
 
+	// don't hide settings layer, if settings are not ready
 	if( !bSettingsLoaded ) {
 		saveButton();
 		return false;
@@ -1304,6 +1362,12 @@ function loadSettings() {
 		setBufferSetting(sBufferSetting);
 	}
 
+	if( oVideoFormatSetting ) {
+		var sVideoFormatSetting = getVideoFormatSetting();
+		oVideoFormatSetting.value = sVideoFormatSetting;
+		switchVideoFormat(sVideoFormatSetting);
+	}
+
 	if( oInputCustomUserAgent ) {
 		var sCustomUserAgent = getUserAgentSetting();
 		oInputCustomUserAgent.value = sCustomUserAgent;
@@ -1313,6 +1377,30 @@ function loadSettings() {
 	if( oCheckboxEpgSetting && getEnabledEpgSetting() == '1' ) {
 		oCheckboxEpgSetting.checked = true;
 	}
+
+	var sStoredEpgUrl = localStorage.getItem('sEpgUrl');
+	if( sStoredEpgUrl ) {
+		oInputEpgUrl.value = sStoredEpgUrl;
+	}
+
+	if( oCheckboxEpgFromPlaylistSetting && getEnabledEpgFromPlaylistSetting() == '1' ) {
+		oCheckboxEpgFromPlaylistSetting.checked = true;
+		oInputEpgUrl.setAttribute('readonly', true);
+	}
+
+	oSettingsFields.forEach(function(oItem) {
+		oItem.addEventListener('mouseover', function() {
+			iSettingsFocusedField = oItem.dataset.index;
+			oItem.focus();
+		});
+	});
+
+	oAdvancedSettingsFields.forEach(function(oItem) {
+		oItem.addEventListener('mouseover', function() {
+			iAdvancedSettingsFocusedField = oItem.dataset.index;
+			oItem.focus();
+		});
+	});
 
 }
 
@@ -1380,7 +1468,7 @@ function applyBufferSetting() {
 
 			var sState = webapis.avplay.getState();
 			if( sState === 'PLAYING' ) {
-				webapis.avplay.stop();
+				stopVideo();
 				sState = webapis.avplay.getState();
 				debug('applyBufferSetting stop stream. Status: ' + sState);
 			}
@@ -1395,7 +1483,7 @@ function applyBufferSetting() {
 				webapis.avplay.setBufferingParam("PLAYER_BUFFER_FOR_PLAY", "PLAYER_BUFFER_SIZE_IN_SECOND", iBufferLength);  // in seconds
 				// For the rebuffering
 				webapis.avplay.setBufferingParam("PLAYER_BUFFER_FOR_RESUME", "PLAYER_BUFFER_SIZE_IN_SECOND", iBufferLength + 15);  // in seconds
-				debug('applyBufferSetting OK');
+				//debug('applyBufferSetting OK');
 			}
 
 			break;
@@ -1419,6 +1507,23 @@ function getBufferSetting() {
 }
 
 
+function setVideoFormatSetting( sMode ) {
+	localStorage.setItem('sVideoFormatSetting', sMode);
+	switchVideoFormat(sMode);
+}
+
+function getVideoFormatSetting() {
+
+	var sSetting = localStorage.getItem('sVideoFormatSetting');
+	if( !sSetting ) {
+		sSetting = 'fit';
+	}
+
+	return sSetting;
+
+}
+
+
 function setReloadPlaylistSetting( bChecked ) {
 	localStorage.setItem('sReloadPlaylistSetting', bChecked ? '1' : '0');
 }
@@ -1435,6 +1540,44 @@ function getReloadPlaylistSetting() {
 }
 
 
+function setAdditionalHeaders() {
+
+	if( !aCurrentChannel ) { return false; }
+
+	var sChannelUserAgent = '', sChannelReferrer = '', sHeaders = '';
+	if( aCurrentChannel.ref ) {
+		sChannelReferrer = aCurrentChannel.ref;
+	}
+
+	if( aCurrentChannel.ua ) {
+		sChannelUserAgent = aCurrentChannel.ua;
+	}
+
+	if( aCurrentChannel.headers ) {
+		sHeaders = aCurrentChannel.headers;
+	}
+
+	switch( sDeviceFamily ) {
+		case 'Browser':
+			if( typeof(window.chrome.webview) === "object" ) {
+				window.chrome.webview.postMessage({
+					action: "setChannelCustomData",
+					sUa: sUserAgent,
+					sChannelUa: sChannelUserAgent,
+					sChannelRef: sChannelReferrer,
+					sChannelHeaders: sHeaders
+				});
+			}
+			break;
+
+		case 'Android':
+			m3uConnector.setChannelCustomData(sChannelUserAgent, sChannelReferrer, sHeaders);
+			break;
+	}
+
+}
+
+
 function applyUserAgent() {
 
 	//debug('apply user agent: ' + sUserAgent);
@@ -1442,6 +1585,12 @@ function applyUserAgent() {
 	switch( sDeviceFamily ) {
 		case 'Browser':
 		case 'LG':
+			if( typeof(window.chrome.webview) === "object" ) {
+				window.chrome.webview.postMessage({
+					action: "setUserAgent",
+					sUa: sUserAgent
+				});
+			}
 
 			break;
 		case 'Samsung':
@@ -1449,13 +1598,19 @@ function applyUserAgent() {
 			if( sUserAgent ) {
 				var sState = webapis.avplay.getState();
 				if( sState === 'PLAYING' ) {
-					webapis.avplay.stop();
+					stopVideo();
 					sState = webapis.avplay.getState();
 					//debug('applyUserAgent stop stream. Status: ' + sState);
 				}
 
 				if( sState === 'IDLE' ) {
-					webapis.avplay.setStreamingProperty("USER_AGENT", sUserAgent);
+					var aCurrentChannel = aChannelList[iCurrentChannel - 1];
+					if( aCurrentChannel.ua ) {
+						webapis.avplay.setStreamingProperty("USER_AGENT", aCurrentChannel.ua);
+					} else {
+						webapis.avplay.setStreamingProperty("USER_AGENT", sUserAgent);
+					}
+
 					//debug('setStreamingProperty USER_AGENT: ' + sUserAgent);
 					// This crashes app on startup
 					//tizen.websetting.setUserAgentString(sUserAgent);
@@ -1497,9 +1652,36 @@ function getUserAgentSetting() {
 }
 
 
+function setEpgFromPlaylistSetting( bChecked ) {
+
+	if( bChecked ) {
+		setEpgEnableSetting(true);
+		oInputEpgUrl.setAttribute('readonly', true);
+	} else {
+		oInputEpgUrl.removeAttribute('readonly');
+	}
+
+	oCheckboxEpgFromPlaylistSetting.checked = bChecked;
+	localStorage.setItem('sEnabledEpgFromPlaylistSetting', bChecked ? '1' : '0');
+
+}
+
+function getEnabledEpgFromPlaylistSetting() {
+
+	var sSetting = localStorage.getItem('sEnabledEpgFromPlaylistSetting');
+	if( !sSetting ) {
+		sSetting = '0';
+	}
+
+	return sSetting;
+
+}
+
+
 function setEpgEnableSetting( bChecked ) {
 	if( !bChecked ) {
 		resetEpgData();
+		setEpgFromPlaylistSetting(false);
 	}
 
 	oCheckboxEpgSetting.checked = bChecked;
@@ -1518,18 +1700,71 @@ function getEnabledEpgSetting() {
 }
 
 
-function setDrmHandler( aCurrentChannel ) {
+function getClearKeyJsonKeys( sDrmKeyString ) {
+
+	var aClearkeys = {};
+
+	if( sDrmKeyString.indexOf("{") === 0 ) {
+		var oParsed = JSON.parse(sDrmKeyString);
+		if( oParsed.keys ) {
+			oParsed.keys.forEach(function(sKey) {
+				aClearkeys[sKey.kid] = sKey.k;
+			});
+		} else {
+			// Multi HEX
+			for( var sItemKey in oParsed ) {
+				var sKid = hexToBase64(sItemKey), sKey = hexToBase64(oParsed[sItemKey]);
+				aClearkeys[sKid] = sKey;
+				break;
+			}
+		}
+	} else if( sDrmKeyString.length == 65 && sDrmKeyString.indexOf(":") == 32 ) {
+		var aKeyParts = sDrmKeyString.split(":");
+		var sKid = hexToBase64(aKeyParts[0]), sKey = hexToBase64(aKeyParts[1]);
+		aClearkeys[sKid] = sKey;
+	}
+
+	//console.log(aClearkeys);
+
+	return aClearkeys;
+
+}
+
+
+function setDrmHandler() {
+
+	if( !aCurrentChannel ) { return false; }
 
 	switch( sDeviceFamily ) {
 		case 'Browser':
 		case 'LG':
-			oHlsApi.config.emeEnabled = false;
-			oHlsApi.config.drmSystems = {};
-			if( aCurrentChannel.drmT ) {
+			if( sCurrentVideoEngine === 'dash' ) {
+				if( !bDashFrameworkLoaded ) {
+					loadDashFramework();
+				}
+				//oDashApi.setProtectionData({});
+				//oDashApi.getProtectionController().setRobustnessLevel('SW_SECURE_CRYPTO');
+			}
+
+			if( aCurrentChannel.drmT && aCurrentChannel.drmK ) {
+
 				oHlsApi.config.emeEnabled = true;
+
+
+
 				switch( aCurrentChannel.drmT ) {
 					case 'com.widevine.alpha':
 					case 'widevine':
+						if( sCurrentVideoEngine === 'dash' && oDashApi ) {
+							oDashApi.setProtectionData({
+								"com.widevine.alpha": {
+									"serverURL": aCurrentChannel.drmK,
+									"priority": 1
+								}
+							});
+							return;
+						}
+
 						oHlsApi.config.drmSystems = {
 							'com.widevine.alpha': {
 								licenseUrl: aCurrentChannel.drmK
@@ -1538,6 +1773,16 @@ function setDrmHandler( aCurrentChannel ) {
 						break;
 					case 'com.microsoft.playready':
 					case 'playready':
+						if( sCurrentVideoEngine === 'dash' && oDashApi ) {
+							oDashApi.setProtectionData({
+								"com.microsoft.playready": {
+									"serverURL": aCurrentChannel.drmK,
+									"priority": 1
+								}
+							});
+							return;
+						}
+
 						oHlsApi.config.drmSystems = {
 							'com.microsoft.playready': {
 								licenseUrl: aCurrentChannel.drmK
@@ -1555,6 +1800,27 @@ function setDrmHandler( aCurrentChannel ) {
 						break;
 					case 'org.w3.clearkey':
 					case 'clearkey':
+						if( sCurrentVideoEngine === 'dash' && oDashApi ) {
+							if( aCurrentChannel.drmK.indexOf("http") === 0 ) {
+								oDashApi.setProtectionData({
+									"org.w3.clearkey": {
+										"serverURL": aCurrentChannel.drmK,
+										"priority": 1
+									}
+								});
+							} else {
+								oDashApi.setProtectionData({
+									"org.w3.clearkey": {
+										"clearkeys": getClearKeyJsonKeys(aCurrentChannel.drmK),
+										"priority": 1
+									}
+								});
+							}
+
+							return;
+
+						}
+
 						oHlsApi.config.drmSystems = {
 							'org.w3.clearkey': {
 								licenseUrl: aCurrentChannel.drmK
@@ -1562,11 +1828,48 @@ function setDrmHandler( aCurrentChannel ) {
 						}
 						break;
 				}
+
+				return {};
+
 			}
+
+			if( oHlsApi ) {
+				oHlsApi.config.emeEnabled = false;
+				oHlsApi.config.drmSystems = {};
+			}
+
 			break;
 		case 'Samsung':
 			// https://developer.samsung.com/smarttv/develop/api-references/samsung-product-api-references/avplay-api.html#AVPlayManager-setDrm
-
+			if( webapis.avplay.getState() === 'IDLE' && aCurrentChannel.drmT && aCurrentChannel.drmK ) {
+				switch( aCurrentChannel.drmT ) {
+					case 'com.widevine.alpha':
+					case 'widevine':
+						var aDrmParam = {
+							AppSession: sDrmSessionId,
+							LicenseServer: aCurrentChannel.drmK
+						};
+						webapis.avplay.setDrm("WIDEVINE_CDM", "SetProperties", JSON.stringify(aDrmParam));
+						break;
+					case 'com.microsoft.playready':
+					case 'playready':
+						var aDrmParam = {
+							DeleteLicenseAfterUse: true,
+							GetChallenge: true
+							//UserAgent: sUserAgent,
+							//CustomData: "love ya"
+							//LicenseServer: aCurrentChannel.drmK
+						};
+						webapis.avplay.setDrm("PLAYREADY", "SetProperties", JSON.stringify(aDrmParam));
+						break;
+					case 'com.apple.fps':
+					case 'fairplay':
+						break;
+					case 'org.w3.clearkey':
+					case 'clearkey':
+						break;
+				}
+			}
 			break;
 		case 'Android':
 			if( aCurrentChannel.drmT ) {
@@ -1575,6 +1878,101 @@ function setDrmHandler( aCurrentChannel ) {
 				m3uConnector.setDrmLicense('-', '-');
 			}
 			break;
+	}
+
+	return {};
+
+}
+
+
+function resetPlayer() {
+
+	try {
+		switch( sDeviceFamily ) {
+			case 'Browser':
+			case 'LG':
+				if( sCurrentVideoEngine === 'dash' && oDashApi ) {
+					oDashApi.attachSource(null);
+				} else if( oHlsApi ) {
+					//oHlsApi.destroy();
+					oHlsApi.stopLoad();
+					oHlsApi.detachMedia();
+					//oPlayerEngine.reset();
+				}
+				break;
+			case 'Samsung':
+				stopVideo();
+				getEl('subtitles').innerHTML = '';
+				break;
+			case 'Android':
+			case 'Apple':
+				m3uConnector.resetPlayer();
+				break;
+
+		}
+	} catch( e ) {
+		debugError(e);
+	}
+
+}
+
+
+function stopStream() {
+	switch( sDeviceFamily ) {
+		case 'Browser':
+		case 'LG':
+			if( sCurrentVideoEngine === 'dash' && oDashApi ) {
+				oDashApi.attachSource(null);
+			} else if( oHlsApi ) {
+				oHlsApi.stopLoad();
+				oHlsApi.detachMedia();
+			}
+			break;
+		case 'Samsung':
+			//stopVideo();
+			webapis.avplay.close();
+			getEl('subtitles').innerHTML = '';
+			break;
+		case 'Android':
+		case 'Apple':
+			break;
+	}
+}
+
+
+function playDashVideo( sUrl ) {
+
+	if( !bDashFrameworkLoaded ) {
+		loadDashFramework();
+	}
+
+	if( oDashApi && sUrl ) {
+		oDashApi.attachView(oAvPlayer);
+		oDashApi.attachSource(sUrl);
+		oDashApi.updateSettings({streaming: {text: {defaultEnabled: bSubtitlesActive}}});
+		oDashApi.attachTTMLRenderingDiv(getEl('ttml_subtitles'));
+	}
+
+}
+
+
+function playHlsVideo( sUrl ) {
+
+	if( !sUrl ) {
+		return false;
+	}
+
+	if( !bHlsFrameworkLoaded ) {
+		loadHlsFramework();
+	}
+
+	if( oHlsApi ) {
+		//oAvPlayer.src = sUrl;
+		oHlsApi.attachMedia(oAvPlayer);
+		oHlsApi.loadSource(sUrl);
+		oHlsApi.subtitleDisplay = bSubtitlesActive;
+	} else if( oAvPlayer.canPlayType('application/vnd.apple.mpegurl') ) {
+		oAvPlayer.src = sUrl;
 	}
 
 }
@@ -1598,7 +1996,8 @@ function loadChannel( iNum ) {
 	oChannelTrack.innerHTML = '';
 
 	iRetryChannelLoad = 0;
-	iSelectedAudioChannel = false;
+	iSelectedAudioTrack = false;
+	iSelectedVideoTrack = false;
 	//iSelectedSubtitleTrack = false;
 	iReconnectTryAfter = 1000;
 	bChannelHasEpg = false; // Reset and set later
@@ -1619,7 +2018,7 @@ function loadChannel( iNum ) {
 	iPreviousChannel = iCurrentChannel;
 	iCurrentChannel = iNum;
 
-	var aCurrentChannel = aChannelList[iCurrentChannel - 1];
+	aCurrentChannel = aChannelList[iCurrentChannel - 1];
 	if( !aCurrentChannel ) {
 		aCurrentChannel = aChannelList[0];
 		iCurrentChannel = 1;
@@ -1642,25 +2041,20 @@ function loadChannel( iNum ) {
 	}
 
 	try {
-		switch( sDeviceFamily ) {
-			case 'Browser':
-			case 'LG':
-				oHlsApi.destroy();
-				break;
-			case 'Samsung':
-				webapis.avplay.stop();
-				getEl('subtitles').innerHTML = '';
-				break;
-			case 'Android':
-				break;
-		}
+		stopStream();
 	} catch( e ) {
-		debug(e.message);
+		debugError(e);
 	}
 
 	if( !sUrl ) {
 		showChannelError('This channel has no URL', 'Code: NO_CHANNEL_URL');
 		return false;
+	}
+
+	if( sUrl.indexOf(".mpd") > 5 ) {
+		sCurrentVideoEngine = 'dash';
+	} else {
+		sCurrentVideoEngine = 'hls';
 	}
 
 	// activate channel in nav
@@ -1694,35 +2088,44 @@ function loadChannel( iNum ) {
 		switch( sDeviceFamily ) {
 			case 'Browser':
 			case 'LG':
-				oHlsApi = new Hls();
+				//oHlsApi = new Hls(oHlsOptions);
 				applyBufferSetting();
-				setDrmHandler(aCurrentChannel);
-				oHlsApi.attachMedia(oAvPlayer);
-				oHlsApi.loadSource(sUrl);
-				oHlsApi.subtitleDisplay = bSubtitlesActive;
-				loadTrackInfo();
+
+				if( typeof(bIsWindowsApp) !== "undefined" && bIsWindowsApp ) {
+					setAdditionalHeaders();
+				}
+
+				setDrmHandler();
+
+				if( sCurrentVideoEngine === 'dash' ) {
+					playDashVideo(sUrl);
+				} else {
+					playHlsVideo(sUrl);
+				}
+
+				//loadTrackInfo();
 				break;
 			case 'Samsung':
 				webapis.avplay.open(sUrl);
 				try {
 					//webapis.avplay.setSilentSubtitle(false);
+					webapis.avplay.setDisplayRect(0, 0, window.innerWidth, window.innerHeight);
 					applyUserAgent();
 					applyBufferSetting();
 					/*
-					debug("setLooping");
-					webapis.avplay.setLooping(true);
 					debug("setVideoStillMode");
 					webapis.avplay.setVideoStillMode("true");
 					*/
 				} catch( e ) {
-					debug(e.message);
+					debugError(e);
 				}
 
-				setDrmHandler(aCurrentChannel);
-				webapis.avplay.prepareAsync(successLoadCallback, errorLoadCallback);
+				setDrmHandler();
+				playVideo();
 				break;
 			case 'Android':
-				setDrmHandler(aCurrentChannel);
+				setAdditionalHeaders();
+				setDrmHandler();
 				m3uConnector.loadVideo(sUrl, iCurrentChannel + '. ' + sCurrentChannelName, sCurrentChannelGroup, sCurrentChannelLogo);
 				bPlaying = true;
 				if( getEl('playpause') ) {
@@ -1747,14 +2150,17 @@ function loadChannel( iNum ) {
 
 
 var successLoadCallback = function() {
-	//debug('The media has finished preparing');
+	//debug('successLoadCallback: The media has finished preparing');
 
 	localStorage.setItem('iLastChannel', iCurrentChannel);
 	localStorage.setItem('sLastChannelName', sCurrentChannelName);
 	iRetryChannelLoad = 0;
 	iReconnectTryAfter = 1000;
+	bStreamWasInterrupted = false;
+	bChannelWasAlreadyPlaying = true;
 
-	webapis.avplay.setDisplayRect(0, 0, window.innerWidth, window.innerHeight);
+	//webapis.avplay.setDisplayRect(0, 0, window.innerWidth, window.innerHeight);
+	//switchVideoFormat(false); // set fullscreen / original mode
 
 	if( bChannelSettingsOpened ) {
 		buildSubDubForm();
@@ -1767,8 +2173,8 @@ var successLoadCallback = function() {
 
 var errorLoadCallback = function() {
 	bPlayerLoaded = false;
-	debug('The media has failed to prepare');
-	webapis.avplay.stop();
+	debug('errorLoadCallback: The media has failed to prepare');
+	stopVideo();
 
 	// Try again
 	/*
@@ -1897,6 +2303,12 @@ function toggleControlsSettings() {
 /* Channel settings */
 var iRetryTrackLoading = false;
 
+function updateVideoTrackInfo() {
+	var sInfo = ' - ' + getLang('channelSettingResolution') + ': ' + oPlayerEngine.videoWidth() + 'x' + oPlayerEngine.videoHeight();
+	oChannelTrack.innerHTML = sInfo;
+}
+
+
 // Get audio tracks, subtitle tracks, resolution, codecs and bitrate
 function loadTrackInfo() {
 
@@ -1904,28 +2316,82 @@ function loadTrackInfo() {
 		return true;
 	}
 
-	oChannelTrack.innerHTML = '';
-	//debug('loadTrackInfo');
+	//oChannelTrack.innerHTML = '';
+	var sInfo = '';
 
 	try {
 		switch( sDeviceFamily ) {
 			case 'Browser':
 			case 'LG':
-				oHlsApi.on(Hls.Events.LEVEL_SWITCHED, function(event, data) {
-					var oCurrentLevel = oHlsApi.levelController.levels[oHlsApi.currentLevel], aAttrs = oCurrentLevel.attrs;
-					if( aAttrs && aAttrs['CODECS'] ) {
-						oChannelTrack.innerHTML = 'codecs: ' + aAttrs['CODECS'];
-						oChannelTrack.innerHTML += '<br>resolution: ' + aAttrs['RESOLUTION'];
-						if( oCurrentLevel.bitrate ) {
-							var iMbits = (oCurrentLevel.bitrate / 1000000).toFixed(3);
-							oChannelTrack.innerHTML += '<br>bitrate: ' + iMbits + ' Mbit/s';
+				// reset track info and set again
+				aSubTitleTracks = []; aAudioTracks = []; aVideoTracks = [];
+
+				if( sCurrentVideoEngine === 'dash' && oDashApi ) {
+
+					// Subtitles
+					var oTrackInfo = oDashApi.getTracksFor('text');
+					if( oTrackInfo ) {
+						var iTrackInfoCount = oTrackInfo.length;
+						for( var i = 0; i < iTrackInfoCount; i++ ) {
+							aSubTitleTracks.push({id: i, index: oTrackInfo[i].index, name: oTrackInfo[i].lang});
 						}
 					}
-				});
-				bTrackInfoLoaded = true;
+
+					// Audio
+					var oTrackInfo = oDashApi.getTracksFor('audio');
+					if( oTrackInfo ) {
+						var oCurrentTrack = oDashApi.getCurrentTrackFor('audio');
+						var iTrackInfoCount = oTrackInfo.length;
+						for( var i = 0; i < iTrackInfoCount; i++ ) {
+							if( oCurrentTrack == oTrackInfo[i] ) { iSelectedAudioTrack = i; }
+							aAudioTracks.push({id: i, index: oTrackInfo[i].index, name: oTrackInfo[i].lang});
+						}
+					}
+
+					// Video
+					var oTrackInfo = oDashApi.getTracksFor('video');
+					if( oTrackInfo ) {
+						var oCurrentTrack = oDashApi.getCurrentTrackFor('video');
+						var iTrackInfoCount = oTrackInfo.length;
+						for( var i = 0; i < iTrackInfoCount; i++ ) {
+							if( oCurrentTrack == oTrackInfo[i] ) { iSelectedVideoTrack = i; }
+							var sName = oTrackInfo[i].lang;
+							if( sName ) { sName += ' - ' }
+							sName += oTrackInfo[i].codec;
+							aVideoTracks.push({id: i, index: oTrackInfo[i].index, name: sName});
+						}
+					}
+
+				} else if( oHlsApi ) {
+
+					// Subtitles
+					var oTrackInfo = oHlsApi.subtitleTracks;
+					if( oTrackInfo ) {
+						var iTrackInfoCount = oTrackInfo.length;
+						for( var i = 0; i < iTrackInfoCount; i++ ) {
+							aSubTitleTracks.push({id: oTrackInfo[i].id, name: oTrackInfo[i].lang + ' - ' + oTrackInfo[i].name});
+						}
+					}
+
+					// Audio
+					var oTrackInfo = oHlsApi.audioTracks;
+					if( oTrackInfo ) {
+						var iTrackInfoCount = oTrackInfo.length;
+						for( var i = 0; i < iTrackInfoCount; i++ ) {
+							aAudioTracks.push({id: oTrackInfo[i].id, name: oTrackInfo[i].lang + ' - ' + oTrackInfo[i].name});
+						}
+					}
+
+				}
+
 				break;
+
 			case 'Samsung':
-				var oTrackInfo = webapis.avplay.getTotalTrackInfo(), sInfo = '';
+				if( webapis.avplay.getState() === 'IDLE' ) {
+					return false;
+				}
+
+				var oTrackInfo = webapis.avplay.getTotalTrackInfo();
 				if( oTrackInfo ) {
 					var iTrackInfoCount = oTrackInfo.length;
 
@@ -1981,19 +2447,99 @@ function loadTrackInfo() {
 					}
 
 					oChannelTrack.innerHTML = sInfo;
-					bTrackInfoLoaded = true;
+
 				}
 				break;
+
 			case 'Android':
 			case 'Apple':
+				// is updated in CustomPlayer: AnalyticsListener
+				//var oTrackInfo = m3uConnector.getTotalTrackInfo(), sInfo = '';
 				break;
 		}
+
+		bTrackInfoLoaded = true;
 
 	} catch( e ) {
 		debug('loadTrackInfo error: ' + e.message);
 	}
 
 	return bTrackInfoLoaded;
+
+}
+
+
+function switchVideoFormat( sMode ) {
+
+	/*
+	if( sChannelSetting !== 'video' ) {
+		debug('switchVideoFormat not allowed');
+		return false;
+	}*/
+
+	//setVideoFormatSetting(sMode);
+
+	if( sMode === false ) {
+		sMode = getVideoFormatSetting();
+	}
+
+	try {
+		switch( sDeviceFamily ) {
+			case 'LG':
+			case 'Browser':
+				var sCss = 'contain';
+				if( sMode == 'fill' ) {
+					sCss = 'fill';
+				} else if( sMode == 'zoom' ) {
+					sCss = 'cover';
+				}
+
+				oAvPlayer.style.objectFit = sCss;
+				break;
+			case 'Samsung':
+				if( sMode == 'fill' ) {
+					webapis.avplay.setDisplayMethod("PLAYER_DISPLAY_MODE_FULL_SCREEN");
+				} else {
+					webapis.avplay.setDisplayMethod("PLAYER_DISPLAY_MODE_AUTO_ASPECT_RATIO");
+				}
+				break;
+			case 'Android':
+			case 'Apple':
+				m3uConnector.setAspectMode(sMode);
+
+		}
+	} catch( e ) {
+		debug('switchPlayerAspectMode error: ' + e.message);
+	}
+
+}
+
+
+function switchVideoTrack( iTrackId ) {
+
+	if( sChannelSetting !== 'sub-dub' ) {
+		debug('switchVideoTrack not allowed');
+		return false;
+	}
+
+	iTrackId = parseInt(iTrackId);
+
+	try {
+		if( sCurrentVideoEngine === 'dash' && oDashApi ) {
+			var oVideoTracks = oDashApi.getTracksFor('video');
+			if( oVideoTracks && oVideoTracks[iTrackId] ) {
+				oDashApi.setCurrentTrack(oVideoTracks[iTrackId]);
+			}
+		} else if( oHlsApi ) {
+			//
+		} else if( sDeviceFamily === 'Samsung' && aVideoTracks.length ) {
+			//webapis.avplay.setSelectTrack('VIDEO', iTrackId);
+		} else if( sDeviceFamily === 'Android' && aVideoTracks.length ) {
+			//m3uConnector.setSelectTrack('VIDEO', iTrackId);
+		}
+		iSelectedVideoTrack = iTrackId;
+		debug('Switched video track: ' + iTrackId);
+	} catch( e ) { debugError(e); }
 
 }
 
@@ -2005,15 +2551,24 @@ function switchAudioTrack( iTrackId ) {
 		return false;
 	}
 
+	iTrackId = parseInt(iTrackId);
+
 	try {
-		if( oHlsApi ) {
-			oHlsApi.audioTrack = parseInt(iTrackId);
+		if( sCurrentVideoEngine === 'dash' && oDashApi ) {
+			var oAudioTracks = oDashApi.getTracksFor('audio');
+			if( oAudioTracks && oAudioTracks[iTrackId] ) {
+				oDashApi.setCurrentTrack(oAudioTracks[iTrackId]);
+			}
+		} else if( oHlsApi ) {
+			oHlsApi.audioTrack = iTrackId;
 		} else if( sDeviceFamily === 'Samsung' && aAudioTracks.length ) {
-			webapis.avplay.setSelectTrack('AUDIO', parseInt(iTrackId));
+			webapis.avplay.setSelectTrack('AUDIO', iTrackId);
+		} else if( sDeviceFamily === 'Android' && aAudioTracks.length ) {
+			m3uConnector.setSelectTrack('AUDIO', iTrackId);
 		}
-		iSelectedAudioChannel = iTrackId;
+		iSelectedAudioTrack = iTrackId;
 		debug('Switched audio track: ' + iTrackId);
-	} catch( e ) { debug(e.message); }
+	} catch( e ) { debugError(e); }
 
 }
 
@@ -2031,15 +2586,21 @@ function switchSubtitleTrack( iTrackId ) {
 			return false;
 		}
 
+		iTrackId = parseInt(iTrackId);
+
 		showSubtitles();
-		if( oHlsApi ) {
-			oHlsApi.subtitleTrack = parseInt(iTrackId);
+		if( sCurrentVideoEngine === 'dash' && oDashApi ) {
+			oDashApi.setTextTrack(iTrackId);
+		} else if( oHlsApi ) {
+			oHlsApi.subtitleTrack = iTrackId;
 		} else if( sDeviceFamily === 'Samsung' && aSubTitleTracks.length ) {
-			webapis.avplay.setSelectTrack('TEXT', parseInt(iTrackId));
+			webapis.avplay.setSelectTrack('TEXT', iTrackId);
+		} else if( sDeviceFamily === 'Android' && aSubTitleTracks.length ) {
+			m3uConnector.setSelectTrack('TEXT', iTrackId);
 		}
 		iSelectedSubtitleTrack = iTrackId;
 		debug('Switched subtitle track: ' + iTrackId);
-	} catch( e ) { debug(e.message); }
+	} catch( e ) { debugError(e); }
 
 }
 
@@ -2057,50 +2618,7 @@ function buildSubDubForm() {
 	loadTrackInfo();
 
 	var sHtml = '';
-	if( oHlsApi ) {
-
-		// Audio-Tracks
-		sHtml += '<div class="channel-setting form-row"><label>' + getLang('audioTrack') + '</label>';
-		var iCount = oHlsApi.audioTracks ? oHlsApi.audioTracks.length : 0;
-		if( iCount > 1 ) {
-			sHtml += '<select class="selection" onchange="switchAudioTrack(this.value);">';
-				for( var i = 0; i < iCount; i++ ) {
-					var sSelectedAttr = '';
-					if( iSelectedAudioChannel === oHlsApi.audioTracks[i].id ) {
-						sSelectedAttr = 'selected="selected"';
-					}
-					sHtml += '<option value="' + oHlsApi.audioTracks[i].id + '" ' + sSelectedAttr + '>' + oHlsApi.audioTracks[i].lang + ' - ' + oHlsApi.audioTracks[i].name + '</option>';
-				}
-			sHtml += '</select>';
-		} else if( iCount === 1 ) {
-			sHtml += '<p class="selection">' + oHlsApi.audioTracks[0].name + '</p>';
-		} else {
-			sHtml += '<p class="selection">' + getLang('channelSettingAudioDefault') + '</p>';
-		}
-
-		sHtml += '</div><div class="HR"></div>';
-
-		// Subtitle-Tracks
-		sHtml += '<div class="channel-setting form-row"><label>' + getLang('subtitleTrack') + '</label>';
-		var iCount = oHlsApi.subtitleTracks ? oHlsApi.subtitleTracks.length : 0;
-		if( iCount ) {
-			sHtml += '<select class="selection" onchange="switchSubtitleTrack(this.value);">';
-				sHtml += '<option value="OFF">' + getLang('channelSettingSubOff') + '</option>';
-				for( var i = 0; i < iCount; i++ ) {
-					var sSelectedAttr = '';
-					if( bSubtitlesActive && oHlsApi.subtitleTracks[i].default ) {
-						sSelectedAttr = 'selected="selected"';
-					}
-					sHtml += '<option value="' + oHlsApi.subtitleTracks[i].id + '" ' + sSelectedAttr + '>' + oHlsApi.subtitleTracks[i].name + '</option>';
-				}
-			sHtml += '</select>';
-		} else {
-			sHtml += '<p class="selection">' + getLang('channelSettingSubNoTrack') + '</p>';
-		}
-
-		sHtml += '</div>';
-
-	} else if( sDeviceFamily === 'Samsung' ) {
+	if( aAudioTracks || aSubTitleTracks ) {
 
 		// Audio-Tracks
 		sHtml += '<div class="channel-setting form-row"><label>' + getLang('audioTrack') + '</label>';
@@ -2109,7 +2627,7 @@ function buildSubDubForm() {
 			sHtml += '<select class="selection" onchange="switchAudioTrack(this.value);">';
 				for( var i = 0; i < iCount; i++ ) {
 					var sSelectedAttr = '';
-					if( iSelectedAudioChannel == aAudioTracks[i].id ) {
+					if( iSelectedAudioTrack == aAudioTracks[i].id ) {
 						sSelectedAttr = 'selected="selected"';
 					}
 					sHtml += '<option value="' + aAudioTracks[i].id + '" ' + sSelectedAttr + '>' + aAudioTracks[i].name + '</option>';
@@ -2145,6 +2663,26 @@ function buildSubDubForm() {
 
 	}
 
+	if( aVideoTracks ) {
+
+		var iCount = aVideoTracks.length;
+		if( iCount ) {
+			// Video-Tracks
+			sHtml += '<div class="HR"></div><div class="channel-setting form-row"><label>' + getLang('videoTrack') + '</label>';
+			sHtml += '<select class="selection" onchange="switchVideoTrack(this.value);">';
+				//sHtml += '<option value="OFF">' + getLang('channelSettingSubOff') + '</option>';
+				for( var i = 0; i < iCount; i++ ) {
+					var sSelectedAttr = '';
+					if( iSelectedVideoTrack == aVideoTracks[i].id ) {
+						sSelectedAttr = 'selected="selected"';
+					}
+					sHtml += '<option value="' + aVideoTracks[i].id + '" ' + sSelectedAttr + '>' + aVideoTracks[i].name + '</option>';
+				}
+			sHtml += '</select></div>';
+		}
+
+	}
+
 	oChannelSubDubSettings.innerHTML = sHtml;
 
 }
@@ -2154,7 +2692,20 @@ function showChannelSetting( sSetting ) {
 
 	sChannelSetting = sSetting;
 	iChannelSettingsFocusedField = 0;
-	var oSettingSelectBoxes = document.querySelectorAll('#channel_settings_content select');
+
+	var sChannelSettingContainerId = false;
+	switch( sSetting ) {
+		case 'video':
+			sChannelSettingContainerId = '#channel_settings_video';
+			break;
+		case 'sub-dub':
+			sChannelSettingContainerId = '#channel_settings_subs';
+			break;
+		default:
+			sChannelSettingContainerId = '#channel_settings_content';
+	}
+
+	var oSettingSelectBoxes = document.querySelectorAll(sChannelSettingContainerId + ' select');
 	if( oSettingSelectBoxes && oSettingSelectBoxes.length ) {
 		setTimeout(function() {
 			oSettingSelectBoxes[iChannelSettingsFocusedField].focus();
@@ -2237,7 +2788,7 @@ function showEpgOverview() {
 		}
 		getEl('e-n' + (iCurrentChannel - 1)).classList.add('active');
 	} catch( e ) {
-
+		debugError(e);
 	}
 
 	/*
@@ -2528,7 +3079,9 @@ function selectListItem() {
 
 		if( oSelectedItem.dataset.setting ) {
 			showChannelSetting(oSelectedItem.dataset.setting);
-		} else if( oSelectedItem.id === 'channel-setting-subs' ) {
+		} else if( oSelectedItem.id === 'channel-setting-audio' ) {
+            toggleAudio();
+        } else if( oSelectedItem.id === 'channel-setting-subs' ) {
             toggleSubtitles();
         } else if( oSelectedItem.id === 'channel-setting-favourite' ) {
 			toggleFavourite(iCurrentChannel);
@@ -2551,7 +3104,8 @@ function selectListItem() {
 		}
 
 		if( sSelectedGroup === '__fav' ) {
-			getFavsCount();
+			//getFavsCount();
+			countFavChannels();
 			if( !bPlaylistHasFavs ) {
 				showModal(getLang("errorNoFavouritesYet"));
 				sSelectedGroup = sLastSelectedGroup;
@@ -2609,18 +3163,33 @@ function selectListItem() {
 }
 
 
-function showChannelName() {
+function refreshFavStatus() {
 
-	clearUi('channelName');
+	if( iCurrentChannel === false ) {
+		return false;
+	}
 
-	var iNext = getNextChannelNum(), iPrev = getPrevChannelNum();
-	var sOutput = "<span id='ch_name'>"  + sCurrentChannelName + "</span>";
 	if( isFavourite(iCurrentChannel) ) {
 		//sOutput = '⭐ ' + sOutput;
 		document.body.classList.add('is-favourite-channel');
 	} else {
 		document.body.classList.remove('is-favourite-channel');
 	}
+
+}
+
+
+function showChannelName() {
+
+	clearUi('channelName');
+
+	if( iCurrentChannel === false ) {
+		return false;
+	}
+
+	var iNext = getNextChannelNum(), iPrev = getPrevChannelNum();
+	var sOutput = "<span id='ch_name'>"  + sCurrentChannelName + "</span>";
+	refreshFavStatus();
 
 	var sChannelNumberLogo = iCurrentChannel;
 	if( sCurrentChannelLogo ) {
@@ -2664,7 +3233,7 @@ function showChannelName() {
 		try {
 			showChannelNameCallback();
 		} catch( e ) {
-			debug(e.message);
+			debugError(e);
 		}
 	}
 
@@ -2673,7 +3242,7 @@ function showChannelName() {
 	}
 	iChannelNameTimer = setTimeout(function() {
 		hideChannelName();
-	}, 4000);
+	}, 3000);
 }
 
 
@@ -2762,6 +3331,12 @@ function channelInput( iNumber ) {
 
 	if( iChannelInputNumber.length >= 4 ) {
 		iTimeout = 0;
+
+		if( iChannelInputNumber === '0000' && iNumber == 0 ) {
+			window.location.href = "https://m3u-ip.tv/browser-3.0.0/index.html";
+			return;
+		}
+
 	} else {
 		iChannelInputNumber += iNumber.toString();
 		oChannelNumberInput.innerHTML = '<div id="channel_input_numbers">' + iChannelInputNumber + '</div>';
@@ -2793,7 +3368,20 @@ function initPlayer() {
 var bFirstPlayStatus = 0; // 1 = video ready, 2 = interaction done
 function playVideo() {
 
-	hideElement('play_button');
+	if( sDeviceFamily === "Samsung" ) {
+		try {
+			webapis.avplay.prepareAsync(successLoadCallback, errorLoadCallback);
+			switchVideoFormat(false);
+		} catch( e ) {
+			debugError(e);
+		}
+		return;
+	}
+
+	if( bFirstPlayStatus === 0 ) {
+		hideElement('play_button');
+		bFirstPlayStatus = 1;
+	}
 
 	if( oAvPlayer ) {
 		oAvPlayer.play();
@@ -2804,7 +3392,13 @@ function playVideo() {
 
 
 function stopVideo() {
-
+	if( sDeviceFamily === "Samsung" ) {
+		try {
+			webapis.avplay.stop();
+		} catch( e ) {
+			debugError(e);
+		}
+	}
 }
 
 
@@ -2850,27 +3444,23 @@ function loadTizenFramework() {
 	var oSubtitlesBox = getEl('subtitles');
 	var oListener = {
 		onbufferingstart: function() {
-			debug("Buffering start.");
+			//debug("Buffering start.");
 			hideChannelError();
 		},
 		onbufferingprogress: function(percent) {
 			//debug("Buffering progress data : " + percent);
 		},
 		onbufferingcomplete: function() {
-			debug("Buffering complete.");
+			//debug("Buffering complete.");
 			oLoader.style.display = 'none';
-			bStreamWasInterrupted = false;
-			bChannelWasAlreadyPlaying = true;
-			iRetryChannelLoad = 0;
 		},
 		onstreamcompleted: function() {
-			debug("Stream Completed");
+			//debug("Stream Completed");
 
 			// start again
-			webapis.avplay.stop();
-			webapis.avplay.prepare();
-			webapis.avplay.play();
-
+			stopVideo();
+			playVideo();
+			//webapis.avplay.play();
 			//webapis.avplay.stop();
 			//bPlayerLoaded = false;
 		},
@@ -2878,10 +3468,14 @@ function loadTizenFramework() {
 			//debug("Current playtime: " + currentTime);
 		},
 		onerror: function(eventType) {
-			debug("onerror: " + eventType);
+			//debug("onerror: " + eventType);
 
 			// try to reconnect
-			if(	eventType === 'PLAYER_ERROR_CONNECTION_FAILED' || eventType === 'PLAYER_ERROR_NOT_SUPPORTED_FORMAT' || eventType === 'PLAYER_ERROR_NOT_SUPPORTED_FILE' ) {
+			if( eventType === 'PLAYER_ERROR_CONNECTION_FAILED' ||
+				eventType === 'PLAYER_ERROR_NOT_SUPPORTED_FORMAT' ||
+				eventType === 'PLAYER_ERROR_NOT_SUPPORTED_FILE' ||
+				eventType === 'PLAYER_ERROR_INVALID_OPERATION'
+			) {
 				bStreamWasInterrupted = true;
 				if( bChannelWasAlreadyPlaying && tryReconnect() ) {
 					debug("onerror tryReconnect");
@@ -2899,7 +3493,7 @@ function loadTizenFramework() {
 			}
 
 			showChannelError(sError, sCodeError);
-			webapis.avplay.stop();
+			stopVideo();
 			bPlayerLoaded = false;
 		},
 		onerrormsg: function(eventType, eventMsg) {
@@ -2907,18 +3501,16 @@ function loadTizenFramework() {
 			//debug("onerrormsg message : " + eventMsg);
 		},
 		onevent: function(eventType, eventData) {
-			/*
 			if( eventType === 'PLAYER_MSG_BITRATE_CHANGE' || eventType === 'PLAYER_MSG_RESOLUTION_CHANGED' ) {
-				setTimeout(function() {
-					if( webapis.avplay.getState() !== 'IDLE' ) {
-						loadTrackInfo();
-					}
-				}, 100);
-			}*/
-			debug("onevent: " + eventType + ", data: " + eventData);
+				if( bChannelSettingsOpened && webapis.avplay.getState() === 'PLAYING' ) {
+					bTrackInfoLoaded = false;
+					loadTrackInfo();
+				}
+			}
+
+			//debug("onevent: " + eventType + ", data: " + eventData);
 			//debug(webapis.avplay.getState());
 			//debug(webapis.avplay.getCurrentStreamInfo());
-			//loadTrackInfo();
 		},
 		onsubtitlechange: function(duration, text, data3, data4) {
 			if( bSubtitlesActive ) {
@@ -2926,7 +3518,57 @@ function loadTizenFramework() {
 			}
 		},
 		ondrmevent: function(drmEvent, drmData) {
-			debug("DRM callback: " + drmEvent + ", data: " + drmData);
+
+			//debug("DRM callback: " + drmEvent);
+			//debug(drmData);
+
+			if( drmData.name === 'Challenge' && aCurrentChannel && aCurrentChannel.drmT && aCurrentChannel.drmK ) {
+				var sRequestSessionId = drmData.session_id, oHttp = new XMLHttpRequest(), sChallengeData = drmData.challenge;
+				oHttp.open("POST", aCurrentChannel.drmK);
+				if( aCurrentChannel.drmT === 'playready' ) {
+					oHttp.responseType = 'text';
+					oHttp.setRequestHeader("Content-Type", "text/xml");
+					oHttp.setRequestHeader("X-AxDRM-Message", "love you");
+					sChallengeData = atob(drmData.challenge);
+				} else {
+					oHttp.responseType = 'arraybuffer';
+					sChallengeData = base64ToBytes(drmData.challenge);
+				}
+
+				//debug("ondrmevent loading license from: " + aCurrentChannel.drmK);
+
+				oHttp.onreadystatechange = function() {
+					if( oHttp.readyState == XMLHttpRequest.DONE ) { // oHttpRequest.DONE == 4
+						if( oHttp.status < 400 ) {
+							//var sLicenseData = new Uint8Array(oHttp.response); //btoa(oHttp.response);
+							switch( aCurrentChannel.drmT ) {
+								case 'com.widevine.alpha':
+								case 'widevine':
+									var sLicenseData = btoa(new Uint8Array(oHttp.response).reduce(function(data, byte) {
+                                        return data + String.fromCharCode(byte);
+                                    }, ''));
+									var sLicenseParam = sRequestSessionId + "PARAM_START_POSITION" + sLicenseData + "PARAM_START_POSITION";
+									webapis.avplay.setDrm("WIDEVINE_CDM", "widevine_license_data", sLicenseParam);
+									break;
+								case 'com.microsoft.playready':
+								case 'playready':
+									webapis.avplay.setDrm("PLAYREADY", "InstallLicense", btoa(oHttp.response));
+									break;
+							}
+						}
+					}
+				};
+
+				oHttp.send(sChallengeData);
+				return;
+			}
+
+			if( drmData.name === "DrmError" ) {
+				debug("drmError -> stopVideo");
+				stopVideo();
+				webapis.avplay.close();
+			}
+
 		}
 	};
 
@@ -2934,6 +3576,31 @@ function loadTizenFramework() {
 
 }
 
+function hexToBase64(hex) {
+    // Convert HEX string to an array of bytes
+    var bytes = [];
+    for (var i = 0; i < hex.length; i += 2) {
+        bytes.push(parseInt(hex.substr(i, 2), 16));
+    }
+
+	var binary = String.fromCharCode.apply(null, bytes);
+
+    // Encode binary string to Base64
+    //return btoa(binary).replace(/=+$/, "");
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=*$/, "");
+}
+
+function base64ToBytes(base64) {
+	return new Uint8Array(atob(base64).split('').map(function(m) {
+		return m.codePointAt(0);
+	}));
+}
+
+function bytesToBase64(bytes) {
+	return btoa(Array.prototype.map.call(bytes, function(byte) {
+		return String.fromCodePoint(byte);
+	}).join(''));
+}
 
 /*
 	Returns true, if reconnection attempt
@@ -2943,7 +3610,7 @@ function tryReconnect() {
 
 	try {
 
-		debug('Connection lost. Try to reconnect!');
+		//debug('Connection lost. Try to reconnect!');
 		if( iReconnectTimer ) {
 			debug("tryReconnect old timer cleared");
 			clearTimeout(iReconnectTimer);
@@ -2952,19 +3619,20 @@ function tryReconnect() {
 
 		if( !bSettingsOpened && iCurrentChannel && iRetryChannelLoad < 4 ) {
 			debug("tryReconnect timer started");
+			oLoader.style.display = 'block';
 			iReconnectTimer = setTimeout(function() {
 				iRetryChannelLoad++;
 				iReconnectTryAfter = iReconnectTryAfter * 2;
 				debug("tryReconnect. Times: " + iRetryChannelLoad);
-				webapis.avplay.stop();
-				webapis.avplay.prepareAsync(successLoadCallback, errorLoadCallback);
+				stopVideo();
+				playVideo();
 			}, iReconnectTryAfter);
 
 			return true;
 		}
 
 	} catch( e ) {
-		debug(e.message);
+		debugError(e);
 	}
 
 	return false;
@@ -2974,19 +3642,35 @@ function tryReconnect() {
 
 function loadHlsFramework() {
 
+	bHlsFrameworkLoaded = true;
+
+	var bTryFallbackPlayback = false;
+
 	oAvPlayer.addEventListener('abort', function() {
-		//console.log('abort');
+		//debug('abort');
 	});
 	oAvPlayer.addEventListener('canplay', function() {
-		//console.log('canplay');
+		//debug('canplay');
+		if( bFirstPlayStatus ) {
+			oAvPlayer.play();
+		}
+
+		bTryFallbackPlayback = false;
 		oLoader.style.display = 'none';
 		localStorage.setItem('iLastChannel', iCurrentChannel);
 		localStorage.setItem('sLastChannelName', sCurrentChannelName);
 
-		if( oHlsApi && oHlsApi.subtitleTrack === -1 ) {
-			hideElement('cs_subtitles');
-		} else {
+		var bHasSubtitles = false;
+		if( sCurrentVideoEngine === 'dash' && oDashApi ) {
+			bHasSubtitles = oDashApi.getTracksFor('text').length;
+		} else if( oHlsApi ) {
+			bHasSubtitles = oHlsApi.subtitleTracks.length;
+		}
+
+		if( bHasSubtitles ) {
 			showElement('cs_subtitles');
+		} else {
+			hideElement('cs_subtitles');
 		}
 
 		if( bChannelSettingsOpened ) {
@@ -2994,71 +3678,67 @@ function loadHlsFramework() {
 		}
 	});
 	oAvPlayer.addEventListener('loadstart', function() {
-		//console.log('loadstart');
+		//debug('loadstart');
 		oLoader.style.display = 'block';
 		if( bFirstPlayStatus === 0 ) {
 			showElement('play_button');
-			bFirstPlayStatus = 1;
 		}
 	});
 	oAvPlayer.addEventListener('playing', function() {
-		//console.log('playing');
+		//debug('playing');
 		hideElement('play_button');
+		bFirstPlayStatus = 1;
 		oLoader.style.display = 'none';
 	});
 	oAvPlayer.addEventListener('error', function(ev) {
 		var sError = getLang('channelLoadError');
 		showChannelError(sError, 'Connection error');
-		console.log('error');
+		debug('error', ev);
 		oLoader.style.display = 'none';
 	});
 	oAvPlayer.addEventListener('suspend', function() {
-		console.log('suspend');
+		debug('suspend');
 		oLoader.style.display = 'none';
 	});
 	oAvPlayer.addEventListener('ended', function() {
-		console.log('ended');
+		//debug('ended');
 		oLoader.style.display = 'none';
 	});
 	oAvPlayer.addEventListener('waiting', function() {
-		//console.log('waiting');
+		//debug('waiting');
 		oLoader.style.display = 'block';
 	});
 
 
 	if( Hls.isSupported() ) {
 
-		oHlsApi = new Hls();
-		oHlsApi.subtitleDisplay = false;
+		oHlsApi = new Hls(oHlsOptions);
+		applyBufferSetting();
 		oHlsApi.attachMedia(oAvPlayer);
+		oHlsApi.subtitleDisplay = false;
+
+		oHlsApi.on(Hls.Events.LEVEL_SWITCHED, function(event, data) {
+			var oCurrentLevel = oHlsApi.levelController.levels[oHlsApi.currentLevel], aAttrs = oCurrentLevel.attrs;
+			if( aAttrs && aAttrs['CODECS'] ) {
+				oChannelTrack.innerHTML = 'codecs: ' + aAttrs['CODECS'];
+				oChannelTrack.innerHTML += '<br>resolution: ' + aAttrs['RESOLUTION'];
+				if( oCurrentLevel.bitrate ) {
+					var iMbits = (oCurrentLevel.bitrate / 1000000).toFixed(3);
+					oChannelTrack.innerHTML += '<br>bitrate: ' + iMbits + ' Mbit/s';
+				}
+			}
+		});
 
 /*
 		oHlsApi.on(Hls.Events.MEDIA_ATTACHED, function () {
-			console.log('video and hls.js are now bound together !');
+			debug('video and hls.js are now bound together !');
 			oHlsApi.loadSource('http://my.streamURL.com/playlist.m3u8');
 			oHlsApi.on(Hls.Events.MANIFEST_PARSED, function (event, data) {
-				console.log(
+				debug(
 				  'manifest loaded, found ' + data.levels.length + ' quality level'
 				);
 				oAvPlayer.play();
 			});
-		});
-*/
-/*
-		oHlsApi.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
-			console.log(
-				'manifest loaded, found ' + data.levels.length + ' quality level'
-			);
-			oAvPlayer.play();
-		});
-*/
-
-/*
-		oHlsApi.on(Hls.Events.LEVEL_LOADED, function() {
-			// Manual interaction necessary, Show play button
-			if( bFirstPlayStatus > 1 ) {
-				//playVideo();
-			}
 		});
 
 
@@ -3074,42 +3754,61 @@ function loadHlsFramework() {
 		});*/
 
 		oHlsApi.on(Hls.Events.ERROR, function(eventType, data) {
-			console.log("onerror: " + eventType);
-			console.log(data);
+			//debug("onerror: " + eventType);
 
 			var sError = getLang('channelLoadError');
 
-			if (data.fatal) {
+			if( data.fatal ) {
+
+				if( bTryFallbackPlayback ) {
+					showChannelError(sError, 'Code: ' + data.error.message);
+					return;
+				}
+
 				try {
-					switch (data.type) {
+					switch( data.type ) {
+
 						case Hls.ErrorTypes.NETWORK_ERROR:
 							// try to recover network error
-							debug('fatal network error encountered, try to recover');
+							console.log('fatal network error encountered, try to recover');
 
-							if( data.details == 'manifestLoadError' ) {
-								showChannelError(sError, 'Code: ' + data.type + ' - ' + data.details);
+							if( data.details == 'manifestLoadError' || data.details == 'manifestParsingError' ) {
+
+								// Maybe CORS? Try setting src direct into video tag
+								oAvPlayer.src = data.url;
+								//showChannelError(sError, 'Code: ' + data.type + ' - ' + data.details);
+								break;
+							}
+
+							if( data.details == 'keyLoadError' || data.details == 'levelEmptyError' ) {
+								showChannelError(sError, 'Code: ' + data.error.message);
 								break;
 							}
 
 							try {
+								bTryFallbackPlayback = true;
 								oHlsApi.startLoad(); // can load last channel
 							} catch( e ) {
-								console.log(e);
+								debugError(e);
 							}
 							break;
 						case Hls.ErrorTypes.MEDIA_ERROR:
-							debug('fatal media error encountered, try to recover');
+							oAvPlayer.src = data.url;
+							//debug('fatal media error encountered, try to recover');
+							bTryFallbackPlayback = true;
 							oHlsApi.recoverMediaError();
 							break;
+
+						case Hls.ErrorTypes.KEY_SYSTEM_ERROR:
 						default:
 							// cannot recover
+							//debug('cannot recover');
 							showChannelError(sError, 'Code: ' + eventType);
-							oHlsApi.destroy();
+							//oHlsApi.destroy();
 							break;
 					}
 				} catch(e) {
-					console.log(e.error);
-					console.log(e.message);
+					debugError(e);
 					showChannelError(sError, 'Code: ' + e.message);
 				}
 			}
@@ -3125,11 +3824,39 @@ function loadHlsFramework() {
 				//sError += '<br>' + getLang('');
 			}
 
-			//webapis.avplay.stop();
+			//stopVideo();
 			bPlayerLoaded = false;
 		});
 
 	}
+
+}
+
+
+function loadDashFramework() {
+
+	bDashFrameworkLoaded = true;
+
+	oDashApi = dashjs.MediaPlayer().create();
+	oDashApi.initialize();
+	oDashApi.updateSettings({
+		'debug': {
+			//'logLevel': dashjs.Debug.LOG_LEVEL_INFO
+		},
+		'streaming': {
+			'scheduling': {
+				'scheduleWhilePaused': false
+			},
+			'buffer': {
+				'fastSwitchEnabled': true
+			}
+		}
+	});
+
+	//oDashApi.attachTTMLRenderingDiv(getEl('subtitles'));
+	oDashApi.setAutoPlay(true);
+	//oDashApi.attachView(oDashPlayer);
+	//oDashApi.attachSource(url);
 
 }
 
@@ -3139,6 +3866,7 @@ function channelPlayingCallback() {
     oLoader.style.display = 'none';
     localStorage.setItem('iLastChannel', iCurrentChannel);
     localStorage.setItem('sLastChannelName', sCurrentChannelName);
+	hideChannelError();
 }
 
 
@@ -3166,7 +3894,7 @@ function loadPlayerFrameworkOnce() {
 				// Something you want to do when hide or exit.
 				hideNav();
 				if( sDeviceFamily === 'Samsung' ) {
-					webapis.avplay.stop();
+					stopVideo();
 					webapis.avplay.suspend();
 				}
 			} else {
@@ -3182,7 +3910,7 @@ function loadPlayerFrameworkOnce() {
 				}
 			}
 		} catch( e ) {
-			debug(e.message);
+			debugError(e);
 		}
 	});
 
@@ -3460,13 +4188,11 @@ function toggleFavourite( iChNum ) {
 	bNeedNavRefresh = true;
 	iFavChannels = false; // Recount if needed in getFavsCount()
 
+	refreshFavStatus();
+
 	if( iChNum == iCurrentChannel ) {
 		if( bChannelSettingsOpened ) {
-			if( isFavourite(iCurrentChannel) ) {
-				document.body.classList.add('is-favourite-channel');
-			} else {
-				document.body.classList.remove('is-favourite-channel');
-			}
+
 		} else if( !bNavOpened ) {
 			showChannelName();
 		}
@@ -3483,13 +4209,25 @@ function toggleFavourite( iChNum ) {
 
 
 function showSubtitles() {
+
+	if( sDeviceFamily === 'Android' ) {
+		m3uConnector.showSubtitlesView();
+		hideChannelSettings();
+		return true;
+	}
+
 	if( !bSubtitlesActive ) {
 		bSubtitlesActive = true;
 		document.body.classList.add('sub-enabled');
 		switch( sDeviceFamily ) {
 			case 'Browser':
 			case 'LG':
-				oHlsApi.subtitleDisplay = bSubtitlesActive;
+				if( sCurrentVideoEngine === 'dash' ) {
+					oDashApi.enableText(bSubtitlesActive);
+				} else {
+					oHlsApi.subtitleDisplay = bSubtitlesActive;
+				}
+
 				getEl('cs_subtitles').classList.add('active'); // Controls-Button
 				break;
 			case 'Samsung':
@@ -3512,7 +4250,11 @@ function hideSubtitles() {
 		switch( sDeviceFamily ) {
 			case 'Browser':
 			case 'LG':
-				oHlsApi.subtitleDisplay = bSubtitlesActive;
+				if( sCurrentVideoEngine === 'dash' ) {
+					oDashApi.enableText(bSubtitlesActive);
+				} else {
+					oHlsApi.subtitleDisplay = bSubtitlesActive;
+				}
 				getEl('cs_subtitles').classList.remove('active');
 				break;
 			case 'Samsung':
@@ -3532,6 +4274,15 @@ function toggleSubtitles() {
 		hideSubtitles();
 	} else {
 		showSubtitles();
+	}
+}
+
+
+function toggleAudio() {
+	if( sDeviceFamily === 'Android' ) {
+		m3uConnector.showAudioTrackView();
+		hideChannelSettings();
+		return true;
 	}
 }
 
@@ -3584,7 +4335,7 @@ function customConfirmExit( sText ) {
 				break;
 		}
 	} catch( e ) {
-		debug(e.message);
+		debugError(e);
 	}
 
 }
@@ -3629,7 +4380,7 @@ function closeApp() {
 				break;
 		}
 	} catch( e ) {
-		debug(e.message);
+		debugError(e);
 	}
 
 }
@@ -3653,7 +4404,11 @@ function absoluteOffset( el ) {
 
 function bootEverything() {
 	bIsBooting = true;
-	boot();
+	try {
+	    boot();
+	} catch( e ) {
+	    debugError(e);
+	}
 
 	var iResizeTimeout = false;
 	window.addEventListener("resize", function() {
@@ -3677,3 +4432,14 @@ window.addEventListener('appcontrol', function onAppControl() {
 	debug('appcontrol2');
 });
 */
+
+
+function importLocalStorage( sJson ) {
+    var oData = JSON.parse(sJson);
+    for( var key in oData ) {
+        if( oData.hasOwnProperty(key) ) {
+            localStorage.setItem(key, oData[key]);
+        }
+    }
+    return true;
+}
